@@ -1,6 +1,6 @@
 # Sessionize - Enterprise Data Pipeline Framework
 
-A production-ready Python framework for building scalable data pipelines using **Apache Spark**, **Apache Kafka**, and **Apache Iceberg**. Sessionize supports both batch and real-time streaming processing with a modular, configuration-driven architecture.
+A production-ready Python framework for building scalable data pipelines using **Apache Spark**, **Apache Kafka**, and **Apache Iceberg**. Sessionize supports both batch and real-time streaming processing with a modular architecture and simple command-line interface, similar to [logflow](https://github.com/ankur334/logflow).
 
 ![Python](https://img.shields.io/badge/python-3.8%2B-blue)
 ![Spark](https://img.shields.io/badge/spark-3.5.0-orange)
@@ -13,7 +13,8 @@ A production-ready Python framework for building scalable data pipelines using *
 ### Core Capabilities
 - **🔄 Dual Processing Modes**: Unified framework for both batch and streaming pipelines
 - **🧩 Modular Architecture**: Pluggable extractors, transformers, and sinks
-- **⚙️ Configuration-Driven**: YAML/JSON configuration with Pydantic validation
+- **🚀 Simple CLI Interface**: Run pipelines with `python main.py run pipeline_name`
+- **🎯 Airflow Ready**: Individual executable pipelines for orchestration
 - **🏭 Production Ready**: Comprehensive logging, error handling, and monitoring
 - **🔌 Extensible Design**: Abstract base classes for custom implementations
 
@@ -36,6 +37,7 @@ A production-ready Python framework for building scalable data pipelines using *
 
 ```
 sessionize/
+├── 🚀 main.py                 # Main CLI entry point (similar to logflow)
 ├── 🔧 src/                    # Core framework source code
 │   ├── extractor/            # Data ingestion modules
 │   │   ├── kafka_extractor.py    # Kafka streaming reader
@@ -43,7 +45,7 @@ sessionize/
 │   │   └── base_extractor.py     # Abstract base class
 │   ├── transformer/          # Data transformation logic
 │   │   ├── json_transformer.py   # JSON parsing & schema validation
-│   │   ├── sql_transformer.py    # SQL-based transformations
+│   │   ├── passthrough_transformer.py    # Pass-through transformer
 │   │   └── base_transformer.py   # Abstract base class
 │   ├── sink/                 # Data output modules
 │   │   ├── iceberg_sink.py       # Apache Iceberg table writer
@@ -57,6 +59,10 @@ sessionize/
 │   ├── config/               # Configuration management
 │   ├── utils/                # Utility functions
 │   └── common/               # Shared components
+├── 🏭 pipelines/              # Individual executable pipelines
+│   ├── kafka_to_iceberg_pipeline.py   # Kafka → Iceberg streaming
+│   ├── batch_file_processor.py        # Batch file processing
+│   └── data_quality_checker.py        # Data quality validation
 ├── 📋 examples/               # Production-ready pipeline examples
 │   ├── kafka_to_iceberg_streaming.py  # Complete streaming pipeline
 │   └── batch_processing_example.py    # Batch processing example
@@ -101,6 +107,73 @@ pip install -e .
 python scripts/validate-setup.py
 ```
 
+## 🚀 Command Line Interface
+
+Sessionize provides a simple CLI similar to [logflow](https://github.com/ankur334/logflow) for running individual pipelines:
+
+### List Available Pipelines
+```bash
+python main.py list
+```
+Output:
+```
+🔧 Sessionize - Available Pipelines
+==================================================
+
+📋 kafka_to_iceberg_pipeline
+   └─ Kafka to Iceberg Streaming Pipeline
+
+📋 batch_file_processor
+   └─ Batch File Processing Pipeline
+
+📋 data_quality_checker
+   └─ Data Quality Checker Pipeline
+
+✅ Total: 3 pipelines available
+```
+
+### Run Individual Pipelines
+```bash
+# Basic usage
+python main.py run <pipeline_name>
+
+# With arguments
+python main.py run batch_file_processor data/input/sample.csv /tmp/output --input-format csv
+
+# Get pipeline-specific help
+python main.py run kafka_to_iceberg_pipeline --help
+
+# Test mode (streaming pipelines)
+python main.py run kafka_to_iceberg_pipeline --test-mode --kafka-topic my-topic
+```
+
+### Legacy Configuration Mode
+```bash
+# Run with YAML/JSON configuration files
+python main.py config --config configs/streaming_config.yaml --mode streaming
+python main.py config --config configs/batch_config.yaml --mode batch
+```
+
+### Airflow Integration
+Each pipeline in the `pipelines/` directory can be executed independently, making them perfect for Airflow DAGs:
+
+```python
+# In your Airflow DAG
+from airflow.operators.bash import BashOperator
+
+kafka_pipeline = BashOperator(
+    task_id='kafka_to_iceberg',
+    bash_command='python /path/to/sessionize/main.py run kafka_to_iceberg_pipeline --test-mode',
+    dag=dag
+)
+
+batch_pipeline = BashOperator(
+    task_id='batch_processing',
+    bash_command='python /path/to/sessionize/main.py run batch_file_processor /data/input /data/output',
+    dag=dag
+)
+```
+
 ## 🔥 Complete Examples
 
 ### 📡 Real-time Kafka to Iceberg Pipeline
@@ -114,8 +187,8 @@ Stream JSON events from Kafka to Iceberg data lake with automatic schema evoluti
 # 2. Generate test streaming data
 python scripts/kafka-producer.py --num-events 1000 --rate 50 &
 
-# 3. Run streaming pipeline
-python examples/kafka_to_iceberg_streaming.py
+# 3. Run streaming pipeline (new CLI interface)
+python main.py run kafka_to_iceberg_pipeline --test-mode
 
 # 4. Verify data ingestion
 python scripts/verify_iceberg_data.py
@@ -133,8 +206,8 @@ python scripts/verify_iceberg_data.py
 Process large datasets with optimized Spark operations:
 
 ```bash
-# 1. Run batch processing pipeline
-python examples/batch_processing_example.py
+# 1. Run batch processing pipeline (new CLI interface)
+python main.py run batch_file_processor data/input/sample.csv /tmp/output --input-format csv
 
 # 2. Verify processed output
 python scripts/verify_output.py
