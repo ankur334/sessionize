@@ -101,8 +101,11 @@ class IcebergSink(BaseSink):
             raise SinkError(f"Iceberg streaming sink setup failed: {e}")
     
     def _configure_spark_for_iceberg(self, spark):
-        spark.conf.set("spark.sql.extensions", "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions")
-        spark.conf.set(f"spark.sql.catalog.{self.catalog_name}", "org.apache.iceberg.spark.SparkCatalog")
+        # Skip setting extensions if already configured (static configs can't be changed after session creation)
+        try:
+            spark.conf.set(f"spark.sql.catalog.{self.catalog_name}", "org.apache.iceberg.spark.SparkCatalog")
+        except Exception:
+            pass
         
         if self.table_path:
             spark.conf.set(f"spark.sql.catalog.{self.catalog_name}.type", "hadoop")
