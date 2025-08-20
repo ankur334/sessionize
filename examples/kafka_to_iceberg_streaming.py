@@ -31,6 +31,10 @@ def create_sample_pipeline_config():
         "spark": {
             "app_name": "KafkaToIcebergStreaming",
             "master": "local[*]",
+            "packages": [
+                "org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.0",
+                "org.apache.iceberg:iceberg-spark-runtime-3.5_2.12:1.4.3"
+            ],
             "config": {
                 "spark.sql.extensions": "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions",
                 "spark.sql.catalog.spark_catalog": "org.apache.iceberg.spark.SparkSessionCatalog",
@@ -76,14 +80,14 @@ def create_sample_pipeline_config():
                     {"filter": "event_type != 'heartbeat'"},
                     {"watermark": "timestamp, 10 minutes"}
                 ],
-                "drop_columns": ["key", "topic", "partition", "offset", "timestampType"]
+                "drop_columns": ["key", "value", "topic", "partition", "offset", "timestampType", "kafka_timestamp"]
             },
             "sink": {
                 "type": "iceberg",
                 "catalog": "local",
                 "database": "events",
                 "table": "user_events",
-                "partition_by": ["event_type", "date(timestamp)"],
+                "partition_by": ["event_type"],
                 "mode": "append",
                 "create_table_if_not_exists": True,
                 "merge_schema": True,

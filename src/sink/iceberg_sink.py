@@ -71,6 +71,22 @@ class IcebergSink(BaseSink):
             
             self.logger.info(f"Setting up streaming write to Iceberg table: {table_identifier}")
             
+            # Get the spark session from the query builder to create table if needed
+            spark = query_builder._spark
+            self._configure_spark_for_iceberg(spark)
+            
+            # Create table if needed for streaming (we need a sample DataFrame for this)
+            if self.create_table_if_not_exists:
+                try:
+                    table_exists = spark.catalog.tableExists(table_identifier)
+                    if not table_exists:
+                        self.logger.info(f"Creating Iceberg table for streaming: {table_identifier}")
+                        # For streaming, we need to create empty table with schema
+                        # We can infer from a dummy batch of the stream
+                        self._create_empty_table_for_streaming(spark, table_identifier)
+                except Exception as e:
+                    self.logger.warning(f"Could not pre-create table for streaming: {e}")
+            
             checkpoint_location = config.get('checkpoint_location', f"/tmp/iceberg_checkpoint_{self.table}")
             
             stream_query = query_builder \
@@ -159,6 +175,49 @@ class IcebergSink(BaseSink):
                 self.logger.info(f"Created Iceberg table: {table_identifier}")
         except Exception as e:
             self.logger.warning(f"Could not check/create table: {e}")
+    
+    def _create_empty_table_for_streaming(self, spark, table_identifier: str):
+        """Create an empty Iceberg table for streaming when schema is not available upfront."""
+        try:
+            # First ensure database exists
+            database_parts = table_identifier.split('.')
+            if len(database_parts) >= 2:
+                database_name = database_parts[-2]  # Get database from identifier
+                create_db_stmt = f"CREATE DATABASE IF NOT EXISTS {self.catalog_name}.{database_name}"
+                spark.sql(create_db_stmt)
+                self.logger.info(f"Ensured database exists: {self.catalog_name}.{database_name}")
+            
+            # Create table with a simple schema that will be expanded during streaming
+            # This is a fallback approach - Iceberg streaming usually handles table creation
+            simple_schema = """
+            CREATE TABLE IF NOT EXISTS {table_id} (
+                event_id string,
+                event_type string,
+                user_id string,
+                timestamp timestamp,
+                session_id string,
+                page_url string,
+                action string,
+                duration_ms int,
+                properties map<string, string>,
+                processing_time timestamp
+            ) USING iceberg
+            """.format(table_id=table_identifier)
+            
+            if self.partition_by:
+                partition_str = ", ".join(self.partition_by)
+                simple_schema += f" PARTITIONED BY ({partition_str})"
+            
+            if self.table_properties:
+                props = ", ".join([f"'{k}'='{v}'" for k, v in self.table_properties.items()])
+                simple_schema += f" TBLPROPERTIES ({props})"
+            
+            spark.sql(simple_schema)
+            self.logger.info(f"Created empty Iceberg table for streaming: {table_identifier}")
+            
+        except Exception as e:
+            self.logger.warning(f"Could not create empty table for streaming: {e}")
+            # Continue anyway - Iceberg streaming might handle table creation
     
     def _get_table_identifier(self) -> str:
         if not self.table:

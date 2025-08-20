@@ -27,6 +27,12 @@ class StreamingRunner(BaseRunner):
             if 'master' in spark_config:
                 builder = builder.master(spark_config['master'])
             
+            # Handle packages configuration
+            if 'packages' in spark_config:
+                packages = ','.join(spark_config['packages'])
+                builder = builder.config("spark.jars.packages", packages)
+                self.logger.info(f"Added Spark packages: {packages}")
+            
             if 'config' in spark_config:
                 for key, value in spark_config['config'].items():
                     builder = builder.config(key, value)

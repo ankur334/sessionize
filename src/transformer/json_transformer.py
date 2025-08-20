@@ -27,6 +27,10 @@ class JsonTransformer(BaseTransformer):
                 raise TransformationError(f"Value column '{self.value_column}' not found in DataFrame")
             
             if self.schema:
+                # First rename Kafka timestamp to avoid conflicts with JSON timestamp field
+                if 'timestamp' in df.columns:
+                    df = df.withColumnRenamed('timestamp', 'kafka_timestamp')
+                
                 parsed_df = df.withColumn("parsed_data", from_json(col(self.value_column), self.schema))
                 result_df = parsed_df.select("*", "parsed_data.*").drop("parsed_data")
             else:
@@ -53,12 +57,17 @@ class JsonTransformer(BaseTransformer):
                         to_timestamp(col(self.timestamp_column), self.timestamp_format)
                     )
             
-            operations = config.get('operations', self.config.get('operations', []))
-            result_df = self._apply_operations(result_df, operations)
-            
+            # Drop columns before applying operations to avoid conflicts
             columns_to_drop = config.get('drop_columns', self.config.get('drop_columns', []))
             if columns_to_drop:
-                result_df = result_df.drop(*columns_to_drop)
+                existing_columns = result_df.columns
+                cols_to_drop = [col for col in columns_to_drop if col in existing_columns]
+                if cols_to_drop:
+                    result_df = result_df.drop(*cols_to_drop)
+                    self.logger.info(f"Dropped columns: {cols_to_drop}")
+            
+            operations = config.get('operations', self.config.get('operations', []))
+            result_df = self._apply_operations(result_df, operations)
             
             self.logger.info("JSON transformation completed successfully")
             return result_df
