@@ -85,3 +85,7 @@ def setup_logging(config: Optional[Dict[str, Any]] = None) -> None:
             format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
             stream=sys.stdout
         )
+
+
+def setup_logger(name: str, config: Optional[Dict[str, Any]] = None) -> logging.Logger:
+    return LoggerFactory.get_logger(name, config)
