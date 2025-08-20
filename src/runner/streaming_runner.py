@@ -27,6 +27,12 @@ class StreamingRunner(BaseRunner):
             if 'master' in spark_config:
                 builder = builder.master(spark_config['master'])
             
+            # Handle packages configuration
+            if 'packages' in spark_config:
+                packages = ','.join(spark_config['packages'])
+                builder = builder.config("spark.jars.packages", packages)
+                self.logger.info(f"Added Spark packages: {packages}")
+            
             if 'config' in spark_config:
                 for key, value in spark_config['config'].items():
                     builder = builder.config(key, value)
@@ -56,18 +62,45 @@ class StreamingRunner(BaseRunner):
         self.sink = self._load_component('sink', sink_config)
     
     def _load_component(self, component_type: str, config: Dict[str, Any]):
+        component_type_str = config.get('type', 'default')
         component_class = config.get('class')
+        
         if not component_class:
-            component_class = config.get('type', 'default').title() + component_type.title()
+            component_class = component_type_str.title() + component_type.title()
         
         try:
-            module_path = f"src.{component_type}.{config.get('type', 'streaming')}_{component_type}"
+            # Try direct module import first (for custom components like sessionization)
+            module_path = f"src.{component_type}.{component_type_str}_{component_type}"
+            
+            # Special handling for known component types
+            if component_type == 'extractor' and component_type_str == 'kafka':
+                module_path = "src.extractor.kafka_extractor"
+                component_class = "KafkaExtractor"
+            elif component_type == 'extractor' and component_type_str == 'file':
+                module_path = "src.extractor.file_extractor"
+                component_class = "FileExtractor"
+            elif component_type == 'transformer' and component_type_str == 'json':
+                module_path = "src.transformer.json_transformer"
+                component_class = "JsonTransformer"
+            elif component_type == 'transformer' and component_type_str == 'sessionization':
+                module_path = "src.transformer.sessionization_transformer"
+                component_class = "SessionizationTransformer"
+            elif component_type == 'transformer' and component_type_str == 'passthrough':
+                module_path = "src.transformer.passthrough_transformer"
+                component_class = "PassthroughTransformer"
+            elif component_type == 'sink' and component_type_str == 'iceberg':
+                module_path = "src.sink.iceberg_sink"
+                component_class = "IcebergSink"
+            elif component_type == 'sink' and component_type_str == 'file':
+                module_path = "src.sink.file_sink"
+                component_class = "FileSink"
+            
             module = __import__(module_path, fromlist=[component_class])
             cls = getattr(module, component_class)
             return cls(config)
         except (ImportError, AttributeError) as e:
-            self.logger.warning(f"Could not load {component_type} class {component_class}: {e}")
-            return None
+            self.logger.error(f"Could not load {component_type} class {component_class} from {module_path}: {e}")
+            raise
     
     def run(self) -> None:
         try:

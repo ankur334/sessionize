@@ -1,0 +1,147 @@
+spark:
+  app_name: "KafkaToIcebergPipeline"
+  master: "local[*]"
+  config:
+    # Iceberg extensions
+    spark.sql.extensions: "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions"
+    spark.sql.catalog.spark_catalog: "org.apache.iceberg.spark.SparkSessionCatalog"
+    spark.sql.catalog.spark_catalog.type: "hive"
+    
+    # Local Iceberg catalog configuration
+    spark.sql.catalog.local: "org.apache.iceberg.spark.SparkCatalog"
+    spark.sql.catalog.local.type: "hadoop"
+    spark.sql.catalog.local.warehouse: "/tmp/iceberg_warehouse"
+    
+    # Streaming configurations
+    spark.sql.streaming.checkpointLocation: "/tmp/streaming_checkpoint"
+    spark.sql.streaming.schemaInference: "true"
+    spark.sql.streaming.stateStore.retention: "1h"
+    
+    # Performance optimizations
+    spark.sql.adaptive.enabled: "true"
+    spark.sql.adaptive.coalescePartitions.enabled: "true"
+    spark.sql.shuffle.partitions: 200
+
+pipeline:
+  type: "streaming"
+  
+  extractor:
+    type: "kafka"
+    kafka.bootstrap.servers: "localhost:9092"
+    subscribe: "events-topic"  # Kafka topic to subscribe to
+    startingOffsets: "latest"  # Can be "earliest", "latest", or specific offsets
+    failOnDataLoss: false
+    maxOffsetsPerTrigger: 10000
+    kafka.group.id: "iceberg-consumer-group"
+    # Additional Kafka configurations
+    kafka.session.timeout.ms: "30000"
+    kafka.request.timeout.ms: "40000"
+    kafka.max.poll.records: "500"
+  
+  transformer:
+    type: "json"
+    value_column: "value"  # Column containing JSON data
+    
+    # Define the expected JSON schema
+    schema:
+      - name: "event_id"
+        type: "string"
+        nullable: false
+      - name: "event_type"
+        type: "string"
+        nullable: false
+      - name: "user_id"
+        type: "string"
+        nullable: false
+      - name: "timestamp"
+        type: "timestamp"
+        nullable: false
+      - name: "session_id"
+        type: "string"
+        nullable: true
+      - name: "page_url"
+        type: "string"
+        nullable: true
+      - name: "action"
+        type: "string"
+        nullable: true
+      - name: "duration_ms"
+        type: "integer"
+        nullable: true
+      - name: "properties"
+        type: "map<string,string>"
+        nullable: true
+    
+    # Timestamp handling
+    timestamp_column: "timestamp"
+    timestamp_format: "yyyy-MM-dd'T'HH:mm:ss.SSS'Z'"
+    
+    # Add processing metadata
+    add_metadata: true
+    
+    # Data transformations
+    operations:
+      - filter: "event_type != 'heartbeat'"  # Filter out heartbeat events
+      - watermark: "timestamp, 10 minutes"   # Set watermark for late data handling
+    
+    # Columns to drop after transformation
+    drop_columns:
+      - "key"
+      - "topic"
+      - "partition"
+      - "offset"
+      - "timestampType"
+  
+  sink:
+    type: "iceberg"
+    
+    # Iceberg catalog configuration
+    catalog: "local"  # Catalog name configured in Spark
+    database: "events"
+    table: "user_events"
+    
+    # Table partitioning
+    partition_by:
+      - "event_type"
+      - "date(timestamp)"
+    
+    # Write configuration
+    mode: "append"  # Can be "append", "overwrite", "create", "replace"
+    create_table_if_not_exists: true
+    merge_schema: true
+    
+    # Table properties
+    table_properties:
+      write.format.default: "parquet"
+      write.parquet.compression-codec: "snappy"
+      write.metadata.delete-after-commit.enabled: "true"
+      write.metadata.previous-versions-max: "10"
+      history.expire.max-snapshot-age-ms: "86400000"  # 1 day
+      write.distribution-mode: "hash"
+    
+    # Streaming specific configurations
+    output_mode: "append"  # Can be "append", "complete", "update"
+    
+    trigger:
+      processingTime: "30 seconds"  # Process micro-batches every 30 seconds
+      # Alternative trigger options:
+      # once: true  # Process once and stop
+      # continuous: "1 second"  # Continuous processing (experimental)
+    
+    checkpoint_location: "/tmp/iceberg_streaming_checkpoint"
+    commit_interval_ms: 60000  # Commit to Iceberg every 60 seconds
+    fanout_enabled: true  # Enable fanout writes for better parallelism
+
+# Logging configuration
+logging:
+  level: "INFO"
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+  file_logging: true
+  log_dir: "logs"
+
+# Monitoring and alerting (optional)
+monitoring:
+  metrics_enabled: true
+  metrics_interval_seconds: 60
+  alert_on_failure: true
+  alert_email: "admin@example.com"

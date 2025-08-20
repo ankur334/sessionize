@@ -1,0 +1,36 @@
+# Include documentation files
+include README.md
+include LICENSE
+include requirements.txt
+include setup.py
+
+# Include configuration files
+recursive-include configs *.yaml *.yml *.json
+
+# Include example pipelines
+recursive-include examples *.py
+
+# Include utility scripts
+recursive-include scripts *.py *.sh
+
+# Include Docker configuration
+include docker-compose.yml
+include Dockerfile
+
+# Include test data and fixtures
+recursive-include tests *.py
+recursive-include data *.json *.csv *.parquet
+
+# Exclude compiled Python files
+global-exclude *.pyc
+global-exclude *.pyo
+global-exclude __pycache__
+
+# Exclude development artifacts
+exclude .gitignore
+exclude .env*
+recursive-exclude .git *
+recursive-exclude .venv *
+recursive-exclude logs *.log
+recursive-exclude .pytest_cache *
+recursive-exclude htmlcov *
