@@ -1,16 +1,73 @@
-# This is a sample Python script.
+#!/usr/bin/env python3
 
-# Press ⌃R to execute it or replace it with your code.
-# Press Double ⇧ to search everywhere for classes, files, tool windows, actions, and settings.
+import sys
+import argparse
+from pathlib import Path
+from src.config.config_manager import ConfigManager
+from src.utils.logger import setup_logging, LoggerFactory
+from src.runner.batch_runner import BatchRunner
+from src.runner.streaming_runner import StreamingRunner
 
 
-def print_hi(name):
-    # Use a breakpoint in the code line below to debug your script.
-    print(f'Hi, {name}')  # Press ⌘F8 to toggle the breakpoint.
+def main():
+    parser = argparse.ArgumentParser(
+        description="Sessionize - Apache Spark Pipeline Framework"
+    )
+    parser.add_argument(
+        "--config",
+        "-c",
+        type=str,
+        required=True,
+        help="Path to configuration file (YAML or JSON)"
+    )
+    parser.add_argument(
+        "--mode",
+        "-m",
+        type=str,
+        choices=["batch", "streaming"],
+        default="batch",
+        help="Pipeline mode: batch or streaming (default: batch)"
+    )
+    parser.add_argument(
+        "--verbose",
+        "-v",
+        action="store_true",
+        help="Enable verbose logging"
+    )
+    
+    args = parser.parse_args()
+    
+    try:
+        config = ConfigManager.load_config(args.config)
+        
+        if args.verbose:
+            if 'logging' not in config:
+                config['logging'] = {}
+            config['logging']['level'] = 'DEBUG'
+        
+        setup_logging(config.get('logging'))
+        logger = LoggerFactory.get_logger("Sessionize", config.get('logging'))
+        
+        logger.info(f"Starting Sessionize in {args.mode} mode")
+        logger.info(f"Configuration loaded from: {args.config}")
+        
+        if args.mode == "batch":
+            runner = BatchRunner(config)
+        else:
+            runner = StreamingRunner(config)
+        
+        runner.run()
+        
+    except KeyboardInterrupt:
+        logger.info("Pipeline interrupted by user")
+    except Exception as e:
+        logger.error(f"Pipeline failed: {e}", exc_info=True)
+        sys.exit(1)
+    finally:
+        if 'runner' in locals():
+            runner.stop()
+            logger.info("Pipeline stopped")
 
 
-# Press the green button in the gutter to run the script.
-if __name__ == '__main__':
-    print_hi('PyCharm')
-
-# See PyCharm help at https://www.jetbrains.com/help/pycharm/
+if __name__ == "__main__":
+    main()

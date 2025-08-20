@@ -1,0 +1,49 @@
+spark:
+  app_name: "SessionizeStreamingExample"
+  master: "local[*]"
+  config:
+    spark.sql.shuffle.partitions: 100
+    spark.sql.streaming.stateStore.retention: "1h"
+    spark.sql.streaming.checkpointLocation: "/tmp/sessionize_checkpoint"
+
+pipeline:
+  extractor:
+    type: "kafka"
+    format: "kafka"
+    options:
+      kafka.bootstrap.servers: "localhost:9092"
+      subscribe: "input-topic"
+      startingOffsets: "latest"
+      failOnDataLoss: false
+  
+  transformer:
+    type: "json"
+    schema:
+      - name: "id"
+        type: "string"
+      - name: "timestamp"
+        type: "timestamp"
+      - name: "event_type"
+        type: "string"
+      - name: "user_id"
+        type: "string"
+      - name: "data"
+        type: "string"
+    operations:
+      - watermark: "timestamp, 10 minutes"
+      - filter: "event_type != 'heartbeat'"
+  
+  sink:
+    type: "kafka"
+    format: "kafka"
+    topic: "output-topic"
+    options:
+      kafka.bootstrap.servers: "localhost:9092"
+    output_mode: "append"
+    trigger:
+      processingTime: "10 seconds"
+    checkpoint_location: "/tmp/sessionize_streaming_checkpoint"
+
+logging:
+  level: "INFO"
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"

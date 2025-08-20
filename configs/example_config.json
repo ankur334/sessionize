@@ -1,0 +1,43 @@
+{
+  "spark": {
+    "app_name": "SessionizeJSONExample",
+    "master": "local[2]",
+    "config": {
+      "spark.sql.shuffle.partitions": 100,
+      "spark.sql.adaptive.enabled": true
+    }
+  },
+  "pipeline": {
+    "extractor": {
+      "type": "file",
+      "format": "json",
+      "path": "data/input/sample.json",
+      "options": {
+        "multiLine": true
+      }
+    },
+    "transformer": {
+      "type": "sql",
+      "operations": [
+        {
+          "type": "create_view",
+          "name": "input_data"
+        },
+        {
+          "type": "sql_query",
+          "query": "SELECT * FROM input_data WHERE status = 'active'"
+        }
+      ]
+    },
+    "sink": {
+      "type": "file",
+      "format": "json",
+      "path": "data/output/json_result",
+      "mode": "overwrite"
+    }
+  },
+  "logging": {
+    "level": "DEBUG",
+    "format": "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+  }
+}

@@ -1,0 +1,33 @@
+spark:
+  app_name: "SessionizeBatchExample"
+  master: "local[*]"
+  config:
+    spark.sql.shuffle.partitions: 200
+    spark.sql.adaptive.enabled: true
+    spark.sql.adaptive.coalescePartitions.enabled: true
+
+pipeline:
+  extractor:
+    type: "file"
+    format: "csv"
+    path: "data/input/sample.csv"
+    options:
+      header: true
+      inferSchema: true
+  
+  transformer:
+    type: "passthrough"
+    operations:
+      - filter: "age > 25"
+      - select: ["id", "name", "age", "email", "department"]
+  
+  sink:
+    type: "file"
+    format: "parquet"
+    path: "data/output/batch_result"
+    mode: "overwrite"
+    partitionBy: []
+
+logging:
+  level: "INFO"
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
