@@ -118,7 +118,7 @@ class SessionizationTransformer(BaseTransformer):
     
     def _sessionize_events(self, df: DataFrame) -> DataFrame:
         """
-        Main sessionization logic using window functions and state management.
+        Main sessionization logic with proper 2-hour max duration session splitting.
         """
         try:
             # Define window function partitioned by user and ordered by time
@@ -133,47 +133,92 @@ class SessionizationTransformer(BaseTransformer):
                 (col("event_time_ms") - col("prev_event_time_ms")) / 1000.0
             )
             
-            # Mark session boundaries (including max duration rule)
-            df_with_boundaries = df_with_diffs.withColumn(
-                "is_new_session",
+            # FIRST PASS: Detect inactivity-based session boundaries
+            df_with_inactivity_boundaries = df_with_diffs.withColumn(
+                "is_inactivity_boundary",
                 when(
                     col("prev_event_time_ms").isNull(), True  # First event for user
                 ).when(
-                    col("time_diff_seconds") > self.inactivity_timeout_seconds, True  # Inactivity timeout
+                    col("time_diff_seconds") > self.inactivity_timeout_seconds, True  # 30min inactivity
                 ).otherwise(False)
             )
             
-            # Calculate cumulative session markers to create session IDs
-            df_with_session_markers = df_with_boundaries.withColumn(
-                "session_marker",
-                spark_sum(when(col("is_new_session"), 1).otherwise(0)).over(user_window)
+            # Create initial session markers based on inactivity
+            df_with_initial_sessions = df_with_inactivity_boundaries.withColumn(
+                "initial_session_marker",
+                spark_sum(when(col("is_inactivity_boundary"), 1).otherwise(0)).over(user_window)
             )
             
-            # Create session_id by combining user_id and session_marker
-            df_with_session_id = df_with_session_markers.withColumn(
+            # SECOND PASS: Apply max duration rule by splitting long sessions
+            df_final = self._apply_max_duration_splitting(df_with_initial_sessions, user_window)
+            
+            return df_final
+            
+        except Exception as e:
+            self.logger.error(f"Sessionization logic failed: {e}")
+            raise TransformationError(f"Failed to apply sessionization logic: {e}")
+    
+    def _apply_max_duration_splitting(self, df: DataFrame, user_window: Window) -> DataFrame:
+        """
+        Apply 2-hour max duration rule by properly splitting sessions.
+        """
+        try:
+            # Calculate session start time for each initial session
+            initial_session_window = Window.partitionBy(self.user_id_column, "initial_session_marker")
+            
+            df_with_session_starts = df.withColumn(
+                "initial_session_start_ms",
+                spark_min("event_time_ms").over(initial_session_window)
+            )
+            
+            # Calculate time since session start for each event
+            df_with_time_since_start = df_with_session_starts.withColumn(
+                "time_since_session_start_seconds",
+                (col("event_time_ms") - col("initial_session_start_ms")) / 1000.0
+            )
+            
+            # Mark duration-based boundaries (events that exceed 2-hour limit)
+            df_with_duration_boundaries = df_with_time_since_start.withColumn(
+                "exceeds_duration_limit", 
+                col("time_since_session_start_seconds") > self.max_session_duration_seconds
+            )
+            
+            # Create sub-session markers for duration splits
+            # This splits events that exceed 2 hours into new sessions
+            df_with_duration_splits = df_with_duration_boundaries.withColumn(
+                "duration_split_marker",
+                (col("time_since_session_start_seconds") / self.max_session_duration_seconds).cast("int")
+            )
+            
+            # Combine initial session marker with duration splits for final session ID
+            df_with_final_sessions = df_with_duration_splits.withColumn(
+                "final_session_marker",
+                concat(
+                    col("initial_session_marker").cast("string"),
+                    lit("_"),
+                    col("duration_split_marker").cast("string")
+                )
+            ).withColumn(
                 "session_id",
-                concat(col(self.user_id_column), lit("_session_"), col("session_marker"))
+                concat(col(self.user_id_column), lit("_session_"), col("final_session_marker"))
             )
             
-            # Calculate session-level aggregations
-            session_window = Window.partitionBy(self.user_id_column, "session_id")
+            # Calculate final session statistics
+            final_session_window = Window.partitionBy(self.user_id_column, "session_id")
             
-            df_with_session_stats = df_with_session_id.withColumn(
+            df_with_session_stats = df_with_final_sessions.withColumn(
                 "session_start_time_ms",
-                spark_min("event_time_ms").over(session_window)
+                spark_min("event_time_ms").over(final_session_window)
             ).withColumn(
                 "session_end_time_ms",
-                spark_max("event_time_ms").over(session_window)
+                spark_max("event_time_ms").over(final_session_window)
             ).withColumn(
                 "session_duration_seconds",
                 (col("session_end_time_ms") - col("session_start_time_ms")) / 1000.0
             )
             
-            # Handle max session duration rule
-            df_final = self._enforce_max_session_duration(df_with_session_stats)
-            
-            # Add additional session metadata
-            df_final = df_final.withColumn(
+            # Add human-readable timestamps
+            df_final = df_with_session_stats.withColumn(
                 "session_start_time",
                 from_unixtime(col("session_start_time_ms") / 1000.0)
             ).withColumn(
@@ -181,11 +226,23 @@ class SessionizationTransformer(BaseTransformer):
                 from_unixtime(col("session_end_time_ms") / 1000.0)
             )
             
+            # Clean up intermediate columns
+            columns_to_drop = [
+                "prev_event_time_ms", "time_diff_seconds", "is_inactivity_boundary",
+                "initial_session_marker", "initial_session_start_ms", "time_since_session_start_seconds",
+                "exceeds_duration_limit", "duration_split_marker", "final_session_marker"
+            ]
+            
+            for col_name in columns_to_drop:
+                if col_name in df_final.columns:
+                    df_final = df_final.drop(col_name)
+            
+            self.logger.info("Applied both 30-minute inactivity and 2-hour max duration rules")
             return df_final
             
         except Exception as e:
-            self.logger.error(f"Sessionization logic failed: {e}")
-            raise TransformationError(f"Failed to apply sessionization logic: {e}")
+            self.logger.error(f"Failed to apply max duration splitting: {e}")
+            raise TransformationError(f"Max duration splitting failed: {e}")
     
     def _enforce_max_session_duration(self, df: DataFrame) -> DataFrame:
         """
