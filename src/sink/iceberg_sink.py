@@ -75,24 +75,36 @@ class IcebergSink(BaseSink):
             spark = query_builder._spark
             self._configure_spark_for_iceberg(spark)
             
-            # Create table if needed for streaming (we need a sample DataFrame for this)
+            # For streaming, we need to ensure the table exists or can be created
             if self.create_table_if_not_exists:
                 try:
-                    table_exists = spark.catalog.tableExists(table_identifier)
+                    # Check if table exists using SQL query instead of catalog.tableExists
+                    try:
+                        spark.sql(f"DESCRIBE TABLE {table_identifier}").count()
+                        table_exists = True
+                        self.logger.info(f"Found existing table: {table_identifier}")
+                    except:
+                        table_exists = False
+                        
                     if not table_exists:
                         self.logger.info(f"Creating Iceberg table for streaming: {table_identifier}")
-                        # For streaming, we need to create empty table with schema
-                        # We can infer from a dummy batch of the stream
                         self._create_empty_table_for_streaming(spark, table_identifier)
+                        
                 except Exception as e:
                     self.logger.warning(f"Could not pre-create table for streaming: {e}")
+                    # Continue anyway - let Iceberg streaming handle table creation
             
             checkpoint_location = config.get('checkpoint_location', f"/tmp/iceberg_checkpoint_{self.table}")
             
+            # For streaming to Iceberg, use the table name directly instead of path
             stream_query = query_builder \
                 .format("iceberg") \
-                .option("path", table_identifier) \
                 .option("checkpointLocation", checkpoint_location)
+            
+            # Add table properties for streaming
+            if self.table_properties:
+                for key, value in self.table_properties.items():
+                    stream_query = stream_query.option(f"write.{key}", str(value))
             
             if self.merge_schema:
                 stream_query = stream_query.option("mergeSchema", "true")
@@ -107,7 +119,8 @@ class IcebergSink(BaseSink):
                 if key.startswith('iceberg.'):
                     stream_query = stream_query.option(key, str(value))
             
-            query = stream_query.start()
+            # Use toTable() instead of start() for Iceberg streaming
+            query = stream_query.toTable(table_identifier)
             
             self.logger.info(f"Streaming write to Iceberg table started: {table_identifier}")
             return query
@@ -177,7 +190,7 @@ class IcebergSink(BaseSink):
             self.logger.warning(f"Could not check/create table: {e}")
     
     def _create_empty_table_for_streaming(self, spark, table_identifier: str):
-        """Create an empty Iceberg table for streaming when schema is not available upfront."""
+        """Create an empty Iceberg table for streaming with sessionization schema."""
         try:
             # First ensure database exists
             database_parts = table_identifier.split('.')
@@ -187,33 +200,48 @@ class IcebergSink(BaseSink):
                 spark.sql(create_db_stmt)
                 self.logger.info(f"Ensured database exists: {self.catalog_name}.{database_name}")
             
-            # Create table with a simple schema that will be expanded during streaming
-            # This is a fallback approach - Iceberg streaming usually handles table creation
-            simple_schema = """
-            CREATE TABLE IF NOT EXISTS {table_id} (
-                event_id string,
-                event_type string,
-                user_id string,
-                timestamp timestamp,
-                session_id string,
-                page_url string,
-                action string,
-                duration_ms int,
-                properties map<string, string>,
-                processing_time timestamp
-            ) USING iceberg
-            """.format(table_id=table_identifier)
+            # Create table with sessionization schema
+            sessionization_schema = f"""
+            CREATE TABLE IF NOT EXISTS {table_identifier} (
+                -- Original event fields
+                uuid STRING,
+                event_id STRING, 
+                page_name STRING,
+                event_timestamp STRING,
+                booking_details MAP<STRING, STRING>,
+                event_details STRUCT<
+                    event_name: STRING,
+                    event_type: STRING, 
+                    event_value: STRING
+                >,
+                
+                -- Sessionization fields  
+                session_id STRING,
+                session_start_time_ms BIGINT,
+                session_end_time_ms BIGINT,
+                session_duration_seconds DOUBLE,
+                session_start_time TIMESTAMP,
+                session_end_time TIMESTAMP,
+                
+                -- Event timing fields
+                event_time TIMESTAMP,
+                event_time_ms BIGINT,
+                
+                -- Partitioning columns (added by transformer)
+                session_date STRING,
+                user_hash_bucket INT
+            ) USING iceberg"""
             
             if self.partition_by:
                 partition_str = ", ".join(self.partition_by)
-                simple_schema += f" PARTITIONED BY ({partition_str})"
+                sessionization_schema += f" PARTITIONED BY ({partition_str})"
             
             if self.table_properties:
                 props = ", ".join([f"'{k}'='{v}'" for k, v in self.table_properties.items()])
-                simple_schema += f" TBLPROPERTIES ({props})"
+                sessionization_schema += f" TBLPROPERTIES ({props})"
             
-            spark.sql(simple_schema)
-            self.logger.info(f"Created empty Iceberg table for streaming: {table_identifier}")
+            spark.sql(sessionization_schema)
+            self.logger.info(f"Created empty Iceberg table for streaming with sessionization schema: {table_identifier}")
             
         except Exception as e:
             self.logger.warning(f"Could not create empty table for streaming: {e}")
