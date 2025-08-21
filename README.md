@@ -27,7 +27,7 @@ A production-ready **real-time user sessionization solution** built with **Apach
 
 ## 🏗️ Solution Architecture
 
-### **Advanced Stateful Streaming Architecture**
+### ** Stateful Streaming Architecture**
 
 ```
                     ┌──── Production Streaming Optimizations ────┐
@@ -38,48 +38,48 @@ A production-ready **real-time user sessionization solution** built with **Apach
                     └─────────────────────────────────────────────────────────┘
                                                   │
 ┌─────────────────┐    ┌─────────────────────┐    ┌─────────────────────────────┐    ┌─────────────────────┐
-│   Clickstream   │───▶│    Apache Kafka     │───▶│     Stateful Sessionization   │───▶│    Apache Iceberg   │
-│     Events      │    │    (KRaft Mode)     │    │      (Spark Streaming)        │    │    (Data Lakehouse) │
-│                 │    │                     │    │                               │    │                     │
-│ • JSON Events   │    │ • Health Checks     │    │ ┌─ mapGroupsWithState ─────┐ │    │ • Dual Partitioning │
+│   Clickstream   │───▶│    Apache Kafka     │───▶│     Stateful Sessionization │───▶│    Apache Iceberg   │
+│     Events      │    │    (KRaft Mode)     │    │      (Spark Streaming)      │    │    (Data Lakehouse) │
+│                 │    │                     │    │                             │    │                     │
+│ • JSON Events   │    │ • Health Checks     │    │ ┌─ mapGroupsWithState ────┐ │    │ • Dual Partitioning │
 │ • 2.5M+/hour    │    │ • Auto-scaling      │    │ │  SessionState Store     │ │    │   - session_date    │
 │ • Schema Validation│ │ • Consumer Groups   │    │ │  Cross-batch Tracking   │ │    │   - user_hash_bucket│
 │ • Watermarking  │    │ • Offset Management │    │ │  Persistent Memory      │ │    │ • ACID Transactions │
 └─────────────────┘    └─────────────────────┘    │ └─────────────────────────┘ │    │ • Schema Evolution  │
-                                                  │                               │    │ • Time Travel       │
-                                                  │ ┌─ Business Rules ────────┐  │    │ • Query Optimization│
+                                                  │                             │    │ • Time Travel       │
+                                                  │ ┌─ Business Rules ───────┐  │    │ • Query Optimization│
                                                   │ │ • 30min Inactivity     │  │    │ • ZSTD Compression  │
                                                   │ │ • 2hr Max Duration     │  │    └─────────────────────┘
                                                   │ │ • State Cleanup        │  │              │
                                                   │ │ • Memory Management    │  │              │
                                                   │ └────────────────────────┘  │              │
-                                                  │                               │              │
-                                                  │ ┌─ Fallback Strategy ─────┐  │              │
-                                                  │ │ • Window-based Approach │  │              │
-                                                  │ │ • Import Error Handling │  │              │
+                                                  │                             │              │
+                                                  │ ┌─ Fallback Strategy ─────┐ │              │
+                                                  │ │ • Window-based Approach │ │              │
+                                                  │ │ • Import Error Handling │ │              │
                                                   │ │ • Compatibility Mode   │  │              │
-                                                  │ └─────────────────────────┘  │              │
+                                                  │ └─────────────────────────┘ │              │
                                                   └─────────────────────────────┘              │
-                                                                  │                             │
-                      ┌─────────────────────────────────────────┴─────────────────────────────▼─────────┐
-                      │                           Production Monitoring & Observability                  │
+                                                                  │                            │
+                      ┌─────────────────────────────────────────┴─────────────────────────────▼────────┐
+                      │                           Production Monitoring & Observability                │
                       │  • Stream Metrics (inputRowsPerSecond, processingTime)                         │
                       │  • Consumer Lag Monitoring • State Store Memory Usage                          │
                       │  • Partition Pruning Efficiency • Query Performance Metrics                    │
                       │  • Error Handling & Recovery • Session Accuracy Validation                     │
-                      └─────────────────────────────────────────────────────────────────────────────────┘
+                      └────────────────────────────────────────────────────────────────────────────────┘
 
 ┌─────────────────────────────────── Session Flow Example ─────────────────────────────────────┐
-│                                                                                                │
-│  Micro-batch 1: [User A: events 1,2,3] ──┐                                                  │
+│                                                                                              │
+│  Micro-batch 1: [User A: events 1,2,3] ──┐                                                   │
 │                                           ├─► Persistent State Store ──► Session Detection   │
-│  Micro-batch 2: [User A: events 4,5,6] ──┤    (Cross-batch user state)    (30min gaps &    │
+│  Micro-batch 2: [User A: events 4,5,6] ──┤    (Cross-batch user state)    (30min gaps &      │
 │                                           ├─► SessionState.from_dict()      2hr limits)      │
-│  Micro-batch 3: [User A: events 7,8,9] ──┘    state.update(new_state)                      │
-│                                                                                                │
-│  Result: Sessions span multiple micro-batches with proper business rule enforcement           │
-│                                                                                                │
-└────────────────────────────────────────────────────────────────────────────────────────────┘
+│  Micro-batch 3: [User A: events 7,8,9] ──┘    state.update(new_state)                        |                       
+│                                                                                              │
+│  Result: Sessions span multiple micro-batches with proper business rule enforcement          │
+│                                                                                              │
+└──────────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ### **🎯 Enterprise-Grade Features**
@@ -91,7 +91,7 @@ A production-ready **real-time user sessionization solution** built with **Apach
 | **🗄️ Storage** | Apache Iceberg v2 | • Dual partitioning<br>• ZSTD compression<br>• Schema evolution | **90% scan reduction** |
 | **📊 Orchestration** | Pipeline Controller | • Error handling<br>• Resource cleanup<br>• Monitoring integration | **99.9% reliability** |
 
-### **⚡ Advanced Streaming Performance**
+### **⚡  Streaming Performance**
 
 Our pipeline includes **production-ready streaming optimizations** for handling high-volume data:
 
@@ -163,7 +163,7 @@ sessionize/
 
 **Key Files Explained**:
 - **`user_sessionization_pipeline.py`**: Complete streaming pipeline implementation
-- **`sessionization_transformer.py`**: Advanced two-pass sessionization algorithm with dual partitioning
+- **`sessionization_transformer.py`**:  two-pass sessionization algorithm with dual partitioning
 - **`test_sessionization_rules.py`**: Automated testing of both business rules
 - **`test_partitioning_logic.py`**: Comprehensive Iceberg partitioning strategy verification  
 - **`clickstream-producer.py`**: Generates realistic clickstream data for testing
@@ -356,7 +356,7 @@ Our algorithm has been **thoroughly tested** with synthetic data covering all ed
 | **Combined Rules** | Multiple splits | ✅ **5 sessions** (complex scenario) |
 | **Max Duration Enforcement** | No session > 2hrs | ✅ **90min max** (under limit) |
 
-### 🔧 **Advanced Features**
+### 🔧 ** Features**
 
 ✅ **Two-Pass Processing**: Handles both inactivity and duration rules correctly  
 ✅ **Proper Session Splitting**: Creates new sessions (doesn't just truncate)  
@@ -366,7 +366,7 @@ Our algorithm has been **thoroughly tested** with synthetic data covering all ed
 ✅ **Scalable Architecture**: Handles millions of events per hour  
 ✅ **Production Tested**: Comprehensive test suite with edge cases  
 ✅ **ACID Transactions**: Iceberg ensures data consistency  
-✅ **Advanced Partitioning**: Dual partitioning strategy for optimal query performance  
+✅ ** Partitioning**: Dual partitioning strategy for optimal query performance  
 ✅ **Partition Pruning**: Efficient filtering by date and user hash buckets  
 ✅ **Stateful Streaming**: Cross-batch session tracking with persistent state management  
 ✅ **Production Fallback**: Automatic fallback to window-based approach for compatibility  
@@ -391,7 +391,7 @@ Our algorithm has been **thoroughly tested** with synthetic data covering all ed
 
 ### 📊 **Dual Partitioning for Analytics Performance**
 
-Our pipeline implements an **advanced dual partitioning strategy** optimized for sessionization analytics workloads:
+Our pipeline implements an ** dual partitioning strategy** optimized for sessionization analytics workloads:
 
 ```python
 # Partitioning Strategy Implementation
@@ -506,7 +506,7 @@ python scripts/test_partitioning_logic.py
 ✅ **Combined Filters**: Use both columns for maximum performance  
 ✅ **Batch Processing**: Process by date partitions for ETL efficiency  
 
-### 🔧 **Advanced Partitioning Testing**
+### 🔧 ** Partitioning Testing**
 
 ```bash
 # 1. Test partitioning strategy
@@ -658,7 +658,7 @@ sessions.select('session_duration_seconds').describe().show()
 "
 ```
 
-### 🔬 **Advanced Testing Scenarios**
+### 🔬 ** Testing Scenarios**
 
 Our test scripts cover **real-world edge cases**:
 
@@ -799,7 +799,7 @@ print('Consumer lag:', consumer.metrics())
 "
 ```
 
-## 🔧 Advanced Configuration
+## 🔧  Configuration
 
 ### Custom Sessionization Rules
 
@@ -841,7 +841,7 @@ pytest tests/ -v
 
 # Submit changes
 git checkout -b feature/amazing-sessionization-improvement
-git commit -m "feat: add advanced session splitting logic"
+git commit -m "feat: add  session splitting logic"
 git push origin feature/amazing-sessionization-improvement
 ```
 
