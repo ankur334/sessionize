@@ -1,5 +1,6 @@
 services:
   # Apache Kafka with KRaft mode (no ZooKeeper needed)
+  # Core component for sessionization pipeline
   broker:
     image: apache/kafka:latest
     hostname: broker
@@ -22,6 +23,12 @@ services:
       KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
       KAFKA_LOG_DIRS: /tmp/kraft-combined-logs
       CLUSTER_ID: MkU3OEVBNTcwNTJENDM2Qk
+      # Optimized for sessionization workloads
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: 'true'
+      KAFKA_LOG_RETENTION_HOURS: 24
+      KAFKA_LOG_SEGMENT_BYTES: 104857600  # 100MB
+    volumes:
+      - kafka_data:/tmp/kraft-combined-logs
     networks:
       - sessionize-network
     healthcheck:
@@ -30,112 +37,71 @@ services:
       timeout: 10s
       retries: 3
 
-  # Schema Registry for Avro/JSON schema management
-  schema-registry:
-    image: confluentinc/cp-schema-registry:7.7.1
-    hostname: schema-registry
-    container_name: sessionize-schema-registry
-    depends_on:
-      broker:
-        condition: service_healthy
-    ports:
-      - "8081:8081"
-    environment:
-      SCHEMA_REGISTRY_HOST_NAME: schema-registry
-      SCHEMA_REGISTRY_KAFKASTORE_BOOTSTRAP_SERVERS: 'broker:29092'
-      SCHEMA_REGISTRY_LISTENERS: http://0.0.0.0:8081
-    networks:
-      - sessionize-network
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8081/subjects"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-
-  # Modern Kafka UI
+  # Kafka UI for monitoring and debugging (helpful for development)
   kafka-ui:
     image: provectuslabs/kafka-ui:latest
     container_name: sessionize-kafka-ui
     depends_on:
       broker:
         condition: service_healthy
-      schema-registry:
-        condition: service_healthy
     ports:
       - "8080:8080"
     environment:
       KAFKA_CLUSTERS_0_NAME: sessionize-local
       KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: broker:29092
-      KAFKA_CLUSTERS_0_SCHEMAREGISTRY: http://schema-registry:8081
-      KAFKA_CLUSTERS_0_KAFKACONNECT_0_NAME: connect
       DYNAMIC_CONFIG_ENABLED: 'true'
     networks:
       - sessionize-network
 
-  # Kafka Connect for data integration (optional)
-  kafka-connect:
-    image: confluentinc/cp-kafka-connect:7.7.1
-    hostname: kafka-connect
-    container_name: sessionize-kafka-connect
-    depends_on:
-      broker:
-        condition: service_healthy
-      schema-registry:
-        condition: service_healthy
-    ports:
-      - "8083:8083"
-    environment:
-      CONNECT_BOOTSTRAP_SERVERS: 'broker:29092'
-      CONNECT_REST_ADVERTISED_HOST_NAME: kafka-connect
-      CONNECT_GROUP_ID: sessionize-connect-cluster
-      CONNECT_CONFIG_STORAGE_TOPIC: docker-connect-configs
-      CONNECT_CONFIG_STORAGE_REPLICATION_FACTOR: 1
-      CONNECT_OFFSET_FLUSH_INTERVAL_MS: 10000
-      CONNECT_OFFSET_STORAGE_TOPIC: docker-connect-offsets
-      CONNECT_OFFSET_STORAGE_REPLICATION_FACTOR: 1
-      CONNECT_STATUS_STORAGE_TOPIC: docker-connect-status
-      CONNECT_STATUS_STORAGE_REPLICATION_FACTOR: 1
-      CONNECT_KEY_CONVERTER: org.apache.kafka.connect.storage.StringConverter
-      CONNECT_VALUE_CONVERTER: io.confluent.connect.avro.AvroConverter
-      CONNECT_VALUE_CONVERTER_SCHEMA_REGISTRY_URL: http://schema-registry:8081
-      CONNECT_PLUGIN_PATH: "/usr/share/java,/usr/share/confluent-hub-components"
-      CONNECT_LOG4J_LOGGERS: org.apache.zookeeper=ERROR,org.I0Itec.zkclient=ERROR,org.reflections=ERROR
-    volumes:
-      - kafka_connect_data:/tmp/kafka-logs
-    networks:
-      - sessionize-network
-    profiles:
-      - "full"  # Only start with --profile full
+  # Schema Registry (OPTIONAL - uncomment if you need Avro schemas)
+  # schema-registry:
+  #   image: confluentinc/cp-schema-registry:7.7.1
+  #   hostname: schema-registry
+  #   container_name: sessionize-schema-registry
+  #   depends_on:
+  #     broker:
+  #       condition: service_healthy
+  #   ports:
+  #     - "8081:8081"
+  #   environment:
+  #     SCHEMA_REGISTRY_HOST_NAME: schema-registry
+  #     SCHEMA_REGISTRY_KAFKASTORE_BOOTSTRAP_SERVERS: 'broker:29092'
+  #     SCHEMA_REGISTRY_LISTENERS: http://0.0.0.0:8081
+  #   networks:
+  #     - sessionize-network
+  #   profiles:
+  #     - "extended"
 
-  # KSQL Server for stream processing (optional)
-  ksqldb-server:
-    image: confluentinc/cp-ksqldb-server:7.7.1
-    hostname: ksqldb-server
-    container_name: sessionize-ksqldb-server
-    depends_on:
-      broker:
-        condition: service_healthy
-      kafka-connect:
-        condition: service_started
-    ports:
-      - "8088:8088"
-    environment:
-      KSQL_CONFIG_DIR: "/etc/ksql"
-      KSQL_BOOTSTRAP_SERVERS: "broker:29092"
-      KSQL_HOST_NAME: ksqldb-server
-      KSQL_LISTENERS: "http://0.0.0.0:8088"
-      KSQL_CACHE_MAX_BYTES_BUFFERING: 0
-      KSQL_KSQL_SCHEMA_REGISTRY_URL: "http://schema-registry:8081"
-      KSQL_PRODUCER_INTERCEPTOR_CLASSES: "io.confluent.monitoring.clients.interceptor.MonitoringProducerInterceptor"
-      KSQL_CONSUMER_INTERCEPTOR_CLASSES: "io.confluent.monitoring.clients.interceptor.MonitoringConsumerInterceptor"
-      KSQL_KSQL_CONNECT_URL: "http://kafka-connect:8083"
-      KSQL_KSQL_LOGGING_PROCESSING_TOPIC_REPLICATION_FACTOR: 1
-      KSQL_KSQL_LOGGING_PROCESSING_TOPIC_AUTO_CREATE: 'true'
-      KSQL_KSQL_LOGGING_PROCESSING_STREAM_AUTO_CREATE: 'true'
-    networks:
-      - sessionize-network
-    profiles:
-      - "full"  # Only start with --profile full
+  # Kafka Connect (OPTIONAL - uncomment if you need connector-based integration)
+  # kafka-connect:
+  #   image: confluentinc/cp-kafka-connect:7.7.1
+  #   hostname: kafka-connect
+  #   container_name: sessionize-kafka-connect
+  #   depends_on:
+  #     broker:
+  #       condition: service_healthy
+  #   ports:
+  #     - "8083:8083"
+  #   environment:
+  #     CONNECT_BOOTSTRAP_SERVERS: 'broker:29092'
+  #     CONNECT_REST_ADVERTISED_HOST_NAME: kafka-connect
+  #     CONNECT_GROUP_ID: sessionize-connect-cluster
+  #     CONNECT_CONFIG_STORAGE_TOPIC: docker-connect-configs
+  #     CONNECT_CONFIG_STORAGE_REPLICATION_FACTOR: 1
+  #     CONNECT_OFFSET_STORAGE_TOPIC: docker-connect-offsets
+  #     CONNECT_OFFSET_STORAGE_REPLICATION_FACTOR: 1
+  #     CONNECT_STATUS_STORAGE_TOPIC: docker-connect-status
+  #     CONNECT_STATUS_STORAGE_REPLICATION_FACTOR: 1
+  #     CONNECT_KEY_CONVERTER: org.apache.kafka.connect.storage.StringConverter
+  #     CONNECT_VALUE_CONVERTER: org.apache.kafka.connect.json.JsonConverter
+  #     CONNECT_VALUE_CONVERTER_SCHEMAS_ENABLE: 'false'
+  #     CONNECT_PLUGIN_PATH: "/usr/share/java,/usr/share/confluent-hub-components"
+  #   volumes:
+  #     - kafka_connect_data:/tmp/kafka-logs
+  #   networks:
+  #     - sessionize-network
+  #   profiles:
+  #     - "extended"
 
 volumes:
   kafka_data:
