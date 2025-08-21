@@ -58,7 +58,23 @@ class UserSessionizationPipeline:
                     "spark.sql.streaming.checkpointLocation": "/tmp/sessionize_checkpoint",
                     "spark.sql.streaming.schemaInference": "true",
                     "spark.sql.adaptive.enabled": "false",  # Disable for streaming
-                    "spark.sql.streaming.stateStore.providerClass": "org.apache.spark.sql.execution.streaming.state.HDFSBackedStateStoreProvider"
+                    
+                    # State store configuration
+                    "spark.sql.streaming.stateStore.providerClass": "org.apache.spark.sql.execution.streaming.state.HDFSBackedStateStoreProvider",
+                    "spark.sql.streaming.stateStore.retention": "2h",  # Retain state for 2 hours
+                    
+                    # Backpressure and rate limiting
+                    "spark.sql.streaming.backpressure.enabled": "true",  # Enable adaptive query execution
+                    "spark.sql.streaming.kafka.maxOffsetsPerTrigger": "1000",  # Kafka-specific rate limit
+                    "spark.sql.streaming.receiver.maxRate": "5000",  # Max records per second per receiver
+                    
+                    # Kafka consumer configurations for performance
+                    "spark.sql.streaming.kafka.consumer.pollTimeoutMs": "120000",  # 2 minutes timeout
+                    "spark.sql.streaming.kafka.consumer.cache.maxCapacity": "256",
+                    
+                    # Watermark and late data handling
+                    "spark.sql.streaming.session.timeoutMs": "3600000",  # 1 hour session timeout
+                    "spark.sql.streaming.minBatchesToRetain": "10"  # Keep last 10 batches for recovery
                 }
             },
             "pipeline": {
