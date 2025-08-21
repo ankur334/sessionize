@@ -123,7 +123,7 @@ class UserSessionizationPipeline:
                     "mode": "append",
                     "create_table_if_not_exists": True,
                     "merge_schema": True,
-                    "output_mode": "update",  # Use update mode for sessionization
+                    "output_mode": "append",  # Use append mode for Iceberg streaming
                     "trigger": {
                         "processingTime": "30 seconds"
                     } if not self.test_mode else {
