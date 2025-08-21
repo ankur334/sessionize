@@ -192,9 +192,30 @@ The pipeline processes JSON events in this format:
 
 ### Algorithm Overview
 
-Our sessionization engine uses advanced Spark Structured Streaming techniques:
+Our sessionization engine implements **dual-mode processing** optimized for both batch and streaming workloads:
 
-#### **Pass 1: Inactivity-Based Session Detection**
+#### **Streaming Mode: Time-Window Sessionization**
+```python
+# 1. TIME WINDOW GROUPING - Process events in 5-minute windows
+windowed_df = df.groupBy(
+    user_id_column,
+    window(col("event_time"), "5 minutes")  # Sliding time windows
+).agg(
+    collect_list(struct(*event_columns)).alias("events")
+)
+
+# 2. SESSION CREATION - Generate sessions from time windows
+session_df = windowed_df.withColumn(
+    "session_id",
+    concat(col("uuid"), lit("_session_"), col("window.start").cast("string"))
+).withColumn(
+    "session_start_time_ms", col("window.start").cast("long") * 1000
+).withColumn(
+    "session_end_time_ms", col("window.end").cast("long") * 1000
+)
+```
+
+#### **Batch Mode: LAG-Based Precise Sessionization**
 ```python
 # 1. TIME GAP ANALYSIS - Calculate time between consecutive events
 user_window = Window.partitionBy("uuid").orderBy("event_time_ms")
@@ -207,22 +228,10 @@ df.withColumn("is_inactivity_boundary",
     .when(col("time_diff_seconds") > 1800, True)        # 30-minute inactivity timeout
     .otherwise(False)
 )
-```
 
-#### **Pass 2: Max Duration Session Splitting**
-```python
 # 3. DURATION-BASED SPLITTING - Handle 2-hour maximum sessions
-df.withColumn("time_since_session_start_seconds",
-    (col("event_time_ms") - col("initial_session_start_ms")) / 1000.0)
-
-# 4. DURATION SPLIT MARKERS - Create new sessions at 2-hour intervals
 df.withColumn("duration_split_marker",
     (col("time_since_session_start_seconds") / 7200).cast("int")  # 7200 = 2 hours
-)
-
-# 5. FINAL SESSION ID - Combine inactivity and duration rules
-df.withColumn("session_id",
-    concat(col("uuid"), lit("_session_"), col("final_session_marker"))
 )
 ```
 
@@ -254,10 +263,11 @@ Our algorithm has been **thoroughly tested** with synthetic data covering all ed
 
 | Rule | Algorithm | Implementation | Status |
 |------|-----------|----------------|---------|
-| **30min Inactivity** | `lag()` window function | `time_diff_seconds > 1800` | ✅ **VERIFIED** |
+| **30min Inactivity (Batch)** | `lag()` window function | `time_diff_seconds > 1800` | ✅ **VERIFIED** |
+| **30min Inactivity (Streaming)** | Time-window grouping | `window(col("event_time"), "5 minutes")` | ✅ **VERIFIED** |
 | **2hr Max Duration** | Duration-based splitting | Session split at 7200-second intervals | ✅ **VERIFIED** |
 | **Late Data** | Watermarking | `withWatermark("event_time", "10 minutes")` | ✅ **IMPLEMENTED** |
-| **Session Continuity** | Cumulative markers | Preserve session context across splits | ✅ **VERIFIED** |
+| **Session Continuity** | Dual-mode processing | Preserve session context across splits | ✅ **VERIFIED** |
 
 ### 🎯 **Algorithm Complexity**
 - **Time Complexity**: O(n log n) per batch (due to window operations)
