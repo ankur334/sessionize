@@ -1,35 +1,40 @@
 # Kafka Setup for Sessionize
 
-This document explains how to set up and use the improved Kafka cluster for testing Sessionize pipelines.
+This document explains how to set up and use the streamlined Kafka cluster for the Sessionize user sessionization pipeline.
 
 ## 🚀 Quick Start
 
-### Start Basic Kafka Cluster (Recommended for Development)
+### Start Kafka for Sessionization Pipeline
 ```bash
-./scripts/start-kafka.sh
+# Start essential services (Kafka + UI)
+docker-compose up -d
+
+# Verify services are running
+docker-compose ps
 ```
 
-### Start Full Kafka Cluster (with Connect and KSQL)
+### Start with Extended Services (Optional)
 ```bash
-./scripts/start-kafka.sh --full
+# Include Schema Registry and Kafka Connect
+docker-compose --profile extended up -d
 ```
 
 ### Clean Start (Remove all data)
 ```bash
-./scripts/start-kafka.sh --cleanup
+# Stop and remove all data
+docker-compose down -v
 ```
 
 ## 📋 What's Included
 
-### Basic Profile (Default)
+### Default Services (Optimized for Sessionization)
 - **Kafka Broker** (KRaft mode, no ZooKeeper needed)
-- **Schema Registry** for Avro/JSON schema management
-- **Kafka UI** for visual cluster management
+- **Kafka UI** for visual cluster management and debugging
 
-### Full Profile (--full flag)
-- All basic services +
-- **Kafka Connect** for data integration
-- **KSQL Server** for stream processing
+### Extended Profile (--profile extended)
+- All default services +
+- **Schema Registry** for Avro schema management (if needed)
+- **Kafka Connect** for connector-based data integration (if needed)
 
 ## 🎯 Key Improvements
 
