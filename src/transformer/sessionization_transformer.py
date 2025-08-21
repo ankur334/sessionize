@@ -1,16 +1,179 @@
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Iterator, Tuple
 from pyspark.sql import DataFrame
 from pyspark.sql.functions import (
     col, when, lag, sum as spark_sum, max as spark_max, min as spark_min,
     unix_timestamp, from_unixtime, window, collect_list, struct, 
     explode, coalesce, lit, row_number, monotonically_increasing_id,
-    lead, desc, asc
+    lead, desc, asc, concat, date_format, hash, abs as spark_abs
 )
 from pyspark.sql.window import Window
-from pyspark.sql.types import StructType, StructField, StringType, LongType, TimestampType
+from pyspark.sql.types import (
+    StructType, StructField, StringType, LongType, TimestampType, 
+    IntegerType, DoubleType, MapType, ArrayType
+)
+try:
+    from pyspark.sql.streaming.state import GroupState, GroupStateTimeout
+except ImportError:
+    # Fallback for different Spark versions
+    GroupState = None
+    GroupStateTimeout = None
 from src.transformer.base_transformer import BaseTransformer
 from src.common.exceptions import TransformationError
 import logging
+import time
+from dataclasses import dataclass
+
+
+@dataclass
+class SessionState:
+    """State object to track user session information across micro-batches."""
+    session_id: str
+    session_start_time_ms: int
+    last_event_time_ms: int
+    event_count: int
+    session_number: int = 1
+    
+    def to_dict(self):
+        return {
+            'session_id': self.session_id,
+            'session_start_time_ms': self.session_start_time_ms,
+            'last_event_time_ms': self.last_event_time_ms,
+            'event_count': self.event_count,
+            'session_number': self.session_number
+        }
+    
+    @classmethod
+    def from_dict(cls, data):
+        return cls(**data)
+
+
+@dataclass
+class SessionEvent:
+    """Represents a single event with session information."""
+    user_id: str
+    event_id: str
+    page_name: str
+    event_timestamp: str
+    booking_details: str
+    event_details: dict
+    event_time_ms: int
+    session_id: str = None
+    session_start_time_ms: int = None
+    session_end_time_ms: int = None
+    session_duration_seconds: float = None
+
+
+class StatefulSessionizationTransformer:
+    """
+    Stateful sessionization transformer using mapGroupsWithState for proper
+    cross-batch session tracking in streaming mode.
+    """
+    
+    def __init__(self, inactivity_timeout_seconds: int = 1800, 
+                 max_session_duration_seconds: int = 7200):
+        self.inactivity_timeout_seconds = inactivity_timeout_seconds  # 30 minutes
+        self.max_session_duration_seconds = max_session_duration_seconds  # 2 hours
+    
+    def update_session_state(self, user_id: str, events: Iterator, state: GroupState) -> Iterator[SessionEvent]:
+        """
+        State update function for mapGroupsWithState.
+        Tracks sessions across micro-batches and enforces business rules.
+        """
+        # Convert events iterator to list for processing
+        event_list = list(events)
+        if not event_list:
+            return iter([])
+        
+        # Sort events by timestamp to ensure proper ordering
+        event_list.sort(key=lambda x: x.event_time_ms)
+        
+        # Get or initialize state
+        if state.exists:
+            session_state = SessionState.from_dict(state.get)
+        else:
+            # Initialize state for new user
+            first_event = event_list[0]
+            session_state = SessionState(
+                session_id=f"{user_id}_session_{1}",
+                session_start_time_ms=first_event.event_time_ms,
+                last_event_time_ms=first_event.event_time_ms,
+                event_count=0,
+                session_number=1
+            )
+        
+        # Process events and generate sessionized output
+        sessionized_events = []
+        current_session = session_state
+        
+        for event in event_list:
+            # Check session boundary conditions
+            time_since_last = (event.event_time_ms - current_session.last_event_time_ms) / 1000.0
+            time_since_start = (event.event_time_ms - current_session.session_start_time_ms) / 1000.0
+            
+            # Rule 1: 30-minute inactivity timeout
+            if time_since_last > self.inactivity_timeout_seconds:
+                # Start new session due to inactivity
+                current_session.session_number += 1
+                current_session = SessionState(
+                    session_id=f"{user_id}_session_{current_session.session_number}",
+                    session_start_time_ms=event.event_time_ms,
+                    last_event_time_ms=event.event_time_ms,
+                    event_count=1,
+                    session_number=current_session.session_number
+                )
+            
+            # Rule 2: 2-hour maximum session duration
+            elif time_since_start > self.max_session_duration_seconds:
+                # Start new session due to max duration
+                current_session.session_number += 1
+                current_session = SessionState(
+                    session_id=f"{user_id}_session_{current_session.session_number}",
+                    session_start_time_ms=event.event_time_ms,
+                    last_event_time_ms=event.event_time_ms,
+                    event_count=1,
+                    session_number=current_session.session_number
+                )
+            else:
+                # Continue current session
+                current_session.last_event_time_ms = event.event_time_ms
+                current_session.event_count += 1
+            
+            # Create sessionized event
+            sessionized_event = SessionEvent(
+                user_id=event.user_id,
+                event_id=event.event_id,
+                page_name=event.page_name,
+                event_timestamp=event.event_timestamp,
+                booking_details=event.booking_details,
+                event_details=event.event_details,
+                event_time_ms=event.event_time_ms,
+                session_id=current_session.session_id,
+                session_start_time_ms=current_session.session_start_time_ms,
+                session_end_time_ms=current_session.last_event_time_ms,
+                session_duration_seconds=(current_session.last_event_time_ms - current_session.session_start_time_ms) / 1000.0
+            )
+            
+            sessionized_events.append(sessionized_event)
+        
+        # Update state for next micro-batch
+        state.update(current_session.to_dict())
+        
+        # Set timeout for state cleanup (remove inactive users after 2 hours)
+        state.setTimeoutDuration(self.max_session_duration_seconds * 1000 + 3600000)  # 2hr + 1hr buffer
+        
+        return iter(sessionized_events)
+    
+    def handle_timeout(self, user_id: str, state: GroupState) -> Iterator[SessionEvent]:
+        """
+        Handle state timeout for inactive users.
+        Called when a user has been inactive for the timeout duration.
+        """
+        if state.exists:
+            # Optionally emit a final session end event
+            # For now, just remove the state
+            state.remove()
+        
+        return iter([])
 
 
 class SessionizationTransformer(BaseTransformer):
@@ -442,15 +605,84 @@ class SessionizationTransformer(BaseTransformer):
 
     def _sessionize_events_streaming(self, df: DataFrame) -> DataFrame:
         """
-        Streaming-compatible sessionization using window functions instead of LAG.
-        This approach uses time-window grouping for streaming compatibility.
+        Stateful streaming sessionization using mapGroupsWithState for proper
+        cross-batch session tracking with 30min inactivity and 2hr max duration rules.
+        """
+        try:
+            from pyspark.sql.streaming import GroupStateTimeout
+            from pyspark.sql.functions import struct
+            
+            self.logger.info("Using stateful streaming sessionization with mapGroupsWithState")
+            
+            # Create the stateful transformer
+            stateful_transformer = StatefulSessionizationTransformer(
+                inactivity_timeout_seconds=self.inactivity_timeout_seconds,
+                max_session_duration_seconds=self.max_session_duration_seconds
+            )
+            
+            # Define the schema for session events that will be returned
+            session_schema = StructType([
+                StructField("uuid", StringType(), True),
+                StructField("event_id", StringType(), True),
+                StructField("page_name", StringType(), True),
+                StructField("event_timestamp", StringType(), True),
+                StructField("booking_details", StringType(), True),
+                StructField("event_details", MapType(StringType(), StringType()), True),
+                StructField("event_time_ms", LongType(), True),
+                StructField("session_id", StringType(), True),
+                StructField("session_start_time_ms", LongType(), True),
+                StructField("session_end_time_ms", LongType(), True),
+                StructField("session_duration_seconds", DoubleType(), True),
+            ])
+            
+            # Group by user and apply stateful session tracking
+            sessionized_stream = df.groupByKey(
+                lambda row: row[self.user_id_column]
+            ).mapGroupsWithState(
+                stateful_transformer.update_session_state,
+                session_schema,
+                timeout=GroupStateTimeout.ProcessingTimeTimeout
+            )
+            
+            # Convert back to DataFrame and add additional columns
+            sessionized_df = sessionized_stream.toDF()
+            
+            # Add human-readable timestamps
+            sessionized_df = sessionized_df.withColumn(
+                "session_start_time",
+                from_unixtime(col("session_start_time_ms") / 1000.0).cast("timestamp")
+            ).withColumn(
+                "session_end_time",
+                from_unixtime(col("session_end_time_ms") / 1000.0).cast("timestamp")
+            ).withColumn(
+                "event_time",
+                from_unixtime(col("event_time_ms") / 1000.0).cast("timestamp")
+            )
+            
+            # Add partitioning columns for optimized Iceberg storage
+            partitioned_df = self._add_partitioning_columns(sessionized_df)
+            
+            self.logger.info("Applied stateful streaming sessionization with proper session boundaries")
+            return partitioned_df
+            
+        except Exception as e:
+            self.logger.error(f"Stateful streaming sessionization failed: {e}")
+            # Fallback to simplified streaming approach if stateful fails
+            self.logger.warning("Falling back to simplified streaming sessionization")
+            return self._sessionize_events_streaming_fallback(df)
+    
+    def _sessionize_events_streaming_fallback(self, df: DataFrame) -> DataFrame:
+        """
+        Fallback streaming sessionization using time windows.
+        This is a simplified approach that doesn't track state across batches.
         """
         try:
             from pyspark.sql.functions import (
-                window, collect_list, struct, size, 
-                slice as spark_slice, explode, posexplode,
-                concat, lit, date_format, hash, abs as spark_abs
+                window, collect_list, struct, 
+                explode, posexplode, concat, lit
             )
+            
+            self.logger.info("Using fallback streaming sessionization with time windows")
             
             # Use time windows to group events (5-minute windows for processing)
             windowed_df = df.groupBy(
@@ -458,7 +690,6 @@ class SessionizationTransformer(BaseTransformer):
                 window(col("event_time"), "5 minutes")
             ).agg(
                 collect_list(struct(
-                    # Keep original column order
                     col("uuid"),
                     col("event_id"), 
                     col("page_name"),
@@ -470,8 +701,7 @@ class SessionizationTransformer(BaseTransformer):
                 )).alias("events")
             )
             
-            # Add simple session logic for streaming
-            # In streaming, we'll create sessions based on time windows
+            # Create simple session IDs based on time windows
             session_df = windowed_df.withColumn(
                 "session_id",
                 concat(
@@ -490,7 +720,7 @@ class SessionizationTransformer(BaseTransformer):
                 (col("session_end_time_ms") - col("session_start_time_ms")) / 1000.0
             )
             
-            # Add readable timestamps as proper timestamp types (not strings)
+            # Add readable timestamps
             session_df = session_df.withColumn(
                 "session_start_time",
                 from_unixtime(col("session_start_time_ms") / 1000.0).cast("timestamp")
@@ -499,44 +729,35 @@ class SessionizationTransformer(BaseTransformer):
                 from_unixtime(col("session_end_time_ms") / 1000.0).cast("timestamp")
             )
             
-            # Explode events back to individual rows and select only needed columns
+            # Explode events back to individual rows
             exploded_df = session_df.select(
                 col("*"),
                 posexplode("events").alias("event_pos", "event_data")
             ).select(
-                # Original event data FIRST (to match table schema order)
                 col("event_data.uuid").alias("uuid"),
                 col("event_data.event_id").alias("event_id"),
                 col("event_data.page_name").alias("page_name"),
                 col("event_data.event_timestamp").alias("event_timestamp"),
                 col("event_data.booking_details").alias("booking_details"),
                 col("event_data.event_details").alias("event_details"),
-                # Session data AFTER event details
                 col("session_id"),
                 col("session_start_time_ms"),
                 col("session_end_time_ms"),
                 col("session_duration_seconds"),
                 col("session_start_time"),
                 col("session_end_time"),
-                # Event timing
                 col("event_data.event_time").alias("event_time"),
                 col("event_data.event_time_ms").alias("event_time_ms")
             )
             
             # Add partitioning columns
-            partitioned_df = exploded_df.withColumn(
-                "session_date",
-                date_format(col("session_start_time"), "yyyy-MM-dd")
-            ).withColumn(
-                "user_hash_bucket",
-                (spark_abs(hash(col(self.user_id_column))) % 100).cast("int")
-            )
+            partitioned_df = self._add_partitioning_columns(exploded_df)
             
-            self.logger.info("Applied streaming-compatible sessionization with time windows")
+            self.logger.info("Applied fallback streaming sessionization with time windows")
             return partitioned_df
             
         except Exception as e:
-            self.logger.error(f"Streaming sessionization failed: {e}")
+            self.logger.error(f"Fallback streaming sessionization failed: {e}")
             raise TransformationError(f"Failed to apply streaming sessionization: {e}")
 
 

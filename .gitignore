@@ -175,3 +175,4 @@ config.local.yml
 # Checkpoint directories
 checkpoints/
 .checkpoint/
+/.claude/
