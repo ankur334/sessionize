@@ -74,8 +74,13 @@ class SessionizationTransformer(BaseTransformer):
                     df_with_watermark = df_with_watermark.drop(*cols_to_drop)
                     self.logger.info(f"Dropped columns: {cols_to_drop}")
             
-            # Sessionize the data
-            sessionized_df = self._sessionize_events(df_with_watermark)
+            # Check if this is a streaming DataFrame and use appropriate sessionization
+            if df_with_watermark.isStreaming:
+                self.logger.info("Using streaming-compatible sessionization")
+                sessionized_df = self._sessionize_events_streaming(df_with_watermark)
+            else:
+                self.logger.info("Using batch sessionization with LAG functions")
+                sessionized_df = self._sessionize_events(df_with_watermark)
             
             self.logger.info("Sessionization transformation completed successfully")
             return sessionized_df
@@ -226,6 +231,9 @@ class SessionizationTransformer(BaseTransformer):
                 from_unixtime(col("session_end_time_ms") / 1000.0)
             )
             
+            # Add partitioning columns for optimized Iceberg storage
+            df_final = self._add_partitioning_columns(df_final)
+            
             # Clean up intermediate columns
             columns_to_drop = [
                 "prev_event_time_ms", "time_diff_seconds", "is_inactivity_boundary",
@@ -319,8 +327,13 @@ class SessionizationTransformer(BaseTransformer):
             if schema_config:
                 schema = self._build_spark_schema(schema_config)
                 
+                # Convert binary value to string first if needed
+                value_col = col(value_column)
+                # Check if value column is binary (from Kafka) and convert to string
+                value_str = when(value_col.isNotNull(), value_col.cast("string")).otherwise(lit(None))
+                
                 # Parse JSON and select all columns
-                parsed_df = df.withColumn("parsed_data", from_json(col(value_column), schema))
+                parsed_df = df.withColumn("parsed_data", from_json(value_str, schema))
                 result_df = parsed_df.select("*", "parsed_data.*").drop("parsed_data", value_column)
                 
                 return result_df
@@ -400,6 +413,131 @@ class SessionizationTransformer(BaseTransformer):
         except Exception as e:
             self.logger.error(f"Failed to apply operations: {e}")
             raise TransformationError(f"Operations application failed: {e}")
+    
+    def _add_partitioning_columns(self, df: DataFrame) -> DataFrame:
+        """Add partitioning columns for optimized Iceberg storage."""
+        try:
+            from pyspark.sql.functions import date_format, hash, abs as spark_abs, date_format
+            
+            # Add date-based partition column from session start time
+            df_with_date = df.withColumn(
+                "session_date",
+                date_format(col("session_start_time"), "yyyy-MM-dd")
+            )
+            
+            # Add hash-based bucket column for balanced distribution
+            # Using 100 buckets for balanced distribution across users
+            df_with_bucket = df_with_date.withColumn(
+                "user_hash_bucket",
+                (spark_abs(hash(col(self.user_id_column))) % 100).cast("int")
+            )
+            
+            self.logger.info("Added partitioning columns: session_date, user_hash_bucket")
+            return df_with_bucket
+            
+        except Exception as e:
+            self.logger.error(f"Failed to add partitioning columns: {e}")
+            raise TransformationError(f"Partitioning columns addition failed: {e}")
+
+
+    def _sessionize_events_streaming(self, df: DataFrame) -> DataFrame:
+        """
+        Streaming-compatible sessionization using window functions instead of LAG.
+        This approach uses time-window grouping for streaming compatibility.
+        """
+        try:
+            from pyspark.sql.functions import (
+                window, collect_list, struct, size, 
+                slice as spark_slice, explode, posexplode,
+                concat, lit, date_format, hash, abs as spark_abs
+            )
+            
+            # Use time windows to group events (5-minute windows for processing)
+            windowed_df = df.groupBy(
+                self.user_id_column,
+                window(col("event_time"), "5 minutes")
+            ).agg(
+                collect_list(struct(
+                    # Keep original column order
+                    col("uuid"),
+                    col("event_id"), 
+                    col("page_name"),
+                    col("event_timestamp"),
+                    col("booking_details"),
+                    col("event_details"),
+                    col("event_time"),
+                    col("event_time_ms")
+                )).alias("events")
+            )
+            
+            # Add simple session logic for streaming
+            # In streaming, we'll create sessions based on time windows
+            session_df = windowed_df.withColumn(
+                "session_id",
+                concat(
+                    col(self.user_id_column),
+                    lit("_session_"),
+                    col("window.start").cast("string")
+                )
+            ).withColumn(
+                "session_start_time_ms",
+                col("window.start").cast("long") * 1000
+            ).withColumn(
+                "session_end_time_ms", 
+                col("window.end").cast("long") * 1000
+            ).withColumn(
+                "session_duration_seconds",
+                (col("session_end_time_ms") - col("session_start_time_ms")) / 1000.0
+            )
+            
+            # Add readable timestamps as proper timestamp types (not strings)
+            session_df = session_df.withColumn(
+                "session_start_time",
+                from_unixtime(col("session_start_time_ms") / 1000.0).cast("timestamp")
+            ).withColumn(
+                "session_end_time",
+                from_unixtime(col("session_end_time_ms") / 1000.0).cast("timestamp")
+            )
+            
+            # Explode events back to individual rows and select only needed columns
+            exploded_df = session_df.select(
+                col("*"),
+                posexplode("events").alias("event_pos", "event_data")
+            ).select(
+                # Original event data FIRST (to match table schema order)
+                col("event_data.uuid").alias("uuid"),
+                col("event_data.event_id").alias("event_id"),
+                col("event_data.page_name").alias("page_name"),
+                col("event_data.event_timestamp").alias("event_timestamp"),
+                col("event_data.booking_details").alias("booking_details"),
+                col("event_data.event_details").alias("event_details"),
+                # Session data AFTER event details
+                col("session_id"),
+                col("session_start_time_ms"),
+                col("session_end_time_ms"),
+                col("session_duration_seconds"),
+                col("session_start_time"),
+                col("session_end_time"),
+                # Event timing
+                col("event_data.event_time").alias("event_time"),
+                col("event_data.event_time_ms").alias("event_time_ms")
+            )
+            
+            # Add partitioning columns
+            partitioned_df = exploded_df.withColumn(
+                "session_date",
+                date_format(col("session_start_time"), "yyyy-MM-dd")
+            ).withColumn(
+                "user_hash_bucket",
+                (spark_abs(hash(col(self.user_id_column))) % 100).cast("int")
+            )
+            
+            self.logger.info("Applied streaming-compatible sessionization with time windows")
+            return partitioned_df
+            
+        except Exception as e:
+            self.logger.error(f"Streaming sessionization failed: {e}")
+            raise TransformationError(f"Failed to apply streaming sessionization: {e}")
 
 
 def concat(*cols):
