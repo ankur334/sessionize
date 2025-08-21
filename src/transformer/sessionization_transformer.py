@@ -226,6 +226,9 @@ class SessionizationTransformer(BaseTransformer):
                 from_unixtime(col("session_end_time_ms") / 1000.0)
             )
             
+            # Add partitioning columns for optimized Iceberg storage
+            df_final = self._add_partitioning_columns(df_final)
+            
             # Clean up intermediate columns
             columns_to_drop = [
                 "prev_event_time_ms", "time_diff_seconds", "is_inactivity_boundary",
@@ -400,6 +403,31 @@ class SessionizationTransformer(BaseTransformer):
         except Exception as e:
             self.logger.error(f"Failed to apply operations: {e}")
             raise TransformationError(f"Operations application failed: {e}")
+    
+    def _add_partitioning_columns(self, df: DataFrame) -> DataFrame:
+        """Add partitioning columns for optimized Iceberg storage."""
+        try:
+            from pyspark.sql.functions import date_format, hash, abs as spark_abs, date_format
+            
+            # Add date-based partition column from session start time
+            df_with_date = df.withColumn(
+                "session_date",
+                date_format(col("session_start_time"), "yyyy-MM-dd")
+            )
+            
+            # Add hash-based bucket column for balanced distribution
+            # Using 100 buckets for balanced distribution across users
+            df_with_bucket = df_with_date.withColumn(
+                "user_hash_bucket",
+                (spark_abs(hash(col(self.user_id_column))) % 100).cast("int")
+            )
+            
+            self.logger.info("Added partitioning columns: session_date, user_hash_bucket")
+            return df_with_bucket
+            
+        except Exception as e:
+            self.logger.error(f"Failed to add partitioning columns: {e}")
+            raise TransformationError(f"Partitioning columns addition failed: {e}")
 
 
 def concat(*cols):

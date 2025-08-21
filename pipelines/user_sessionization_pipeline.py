@@ -113,7 +113,13 @@ class UserSessionizationPipeline:
                     "catalog": "local",
                     "database": self.iceberg_database,
                     "table": self.iceberg_table,
-                    "partition_by": ["uuid"],  # Partition by user for better query performance
+                    
+                    # ADVANCED PARTITIONING STRATEGY for sessionization workloads
+                    "partition_by": [
+                        "session_date",      # Date-based partitioning for time-based queries
+                        "user_hash_bucket"   # Hash-based bucketing for balanced distribution
+                    ],
+                    
                     "mode": "append",
                     "create_table_if_not_exists": True,
                     "merge_schema": True,
@@ -123,10 +129,30 @@ class UserSessionizationPipeline:
                     } if not self.test_mode else {
                         "once": True
                     },
-                    # Iceberg table properties for session data
+                    
+                    # OPTIMIZED ICEBERG TABLE PROPERTIES
                     "table_properties": {
+                        # File format and compression
                         "write.format.default": "parquet",
-                        "write.parquet.compression-codec": "snappy"
+                        "write.parquet.compression-codec": "zstd",  # Better compression than snappy
+                        
+                        # Partitioning and bucketing optimizations
+                        "write.target-file-size-bytes": "134217728",  # 128MB target file size
+                        "write.distribution-mode": "hash",           # Hash distribution for balanced writes
+                        
+                        # Performance optimizations
+                        "commit.retry.num-retries": "3",
+                        "commit.retry.min-wait-ms": "100",
+                        "commit.retry.max-wait-ms": "60000",
+                        
+                        # Metadata and cleanup
+                        "history.expire.max-snapshot-age-ms": "432000000",  # 5 days
+                        "write.metadata.delete-after-commit.enabled": "true",
+                        "write.metadata.previous-versions-max": "100",
+                        
+                        # Query optimization  
+                        "read.split.target-size": "134217728",       # 128MB read splits
+                        "format-version": "2"                       # Use Iceberg v2 features
                     }
                 }
             },
