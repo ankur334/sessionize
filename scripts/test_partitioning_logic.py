@@ -35,8 +35,60 @@ except ImportError:
 
 
 def create_test_data_for_partitioning():
-    """Create test data across multiple dates and users to test partitioning."""
+    """Create test data from Kafka or generate synthetic data for partitioning test."""
     
+    print(f"📊 Reading test data from Kafka...")
+    
+    # Try to read from Kafka first
+    try:
+        from pyspark.sql import SparkSession
+        
+        # Create temporary Spark session to read from Kafka
+        temp_spark = SparkSession.builder \
+            .appName("KafkaReader") \
+            .master("local[2]") \
+            .config("spark.jars.packages", "org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.0") \
+            .getOrCreate()
+        
+        temp_spark.sparkContext.setLogLevel("WARN")
+        
+        # Read batch of messages from Kafka
+        kafka_df = temp_spark \
+            .read \
+            .format("kafka") \
+            .option("kafka.bootstrap.servers", "localhost:9092") \
+            .option("subscribe", "clickstream-events") \
+            .option("startingOffsets", "earliest") \
+            .option("endingOffsets", "latest") \
+            .load()
+        
+        kafka_count = kafka_df.count()
+        print(f"📨 Found {kafka_count} messages in Kafka topic")
+        
+        if kafka_count > 0:
+            # Convert Kafka messages to test events
+            kafka_messages = kafka_df.select("value").collect()
+            test_events = []
+            
+            for row in kafka_messages:
+                try:
+                    event_str = row.value.decode('utf-8')
+                    event = json.loads(event_str)
+                    test_events.append(event)
+                except:
+                    continue
+            
+            temp_spark.stop()
+            print(f"✅ Using {len(test_events)} real events from Kafka")
+            return test_events
+            
+        temp_spark.stop()
+        
+    except Exception as e:
+        print(f"⚠️  Could not read from Kafka: {e}")
+        
+    # Fallback to synthetic data
+    print("📊 Generating synthetic test data...")
     test_events = []
     
     # Generate events across 5 days with 100 users
@@ -44,7 +96,6 @@ def create_test_data_for_partitioning():
     num_days = 5
     num_users = 100
     
-    print(f"📊 Generating test data:")
     print(f"   - Days: {num_days}")
     print(f"   - Users: {num_users}")
     print(f"   - Events per user per day: 5-10")
@@ -78,7 +129,7 @@ def create_test_data_for_partitioning():
                 }
                 test_events.append(event)
     
-    print(f"✅ Generated {len(test_events)} total events")
+    print(f"✅ Generated {len(test_events)} synthetic events")
     return test_events
 
 
